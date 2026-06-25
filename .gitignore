@@ -1,0 +1,7 @@
+# Build artifacts
+*.pkg.tar.zst
+*.tar.gz
+pkg/
+src/
+# makepkg clones the upstream sources here
+v4l2-relayd/v4l2-relayd/

@@ -1,0 +1,26 @@
+# libcamera SoftISP ("simple" pipeline) tuning data for Intel IPU6 MIPI sensors.
+#
+# These files drop into /usr/share/libcamera/ipa/simple/ and are picked up by
+# libcamera at runtime (by sensor name), replacing the washed-out/green
+# `uncalibrated.yaml` fallback. No libcamera rebuild required.
+#
+# NOTE: this only ships the colour tuning (CCM/AWB). The compiled
+# CameraSensorHelper for these sensors is a separate libcamera code change; if
+# you want that too (more accurate exposure/gain), install `libcamera-ipu6`
+# from the AUR instead, which conflicts with this package.
+pkgname=libcamera-ipu6-tuning
+pkgver=1
+pkgrel=1
+pkgdesc="libcamera simple-pipeline tuning files for Intel IPU6 MIPI sensors (ov01a10, ...)"
+arch=('any')
+url="https://github.com/EiffL/archlinux-ipu-webcam"
+license=('CC0-1.0')
+depends=('libcamera')
+conflicts=('libcamera-ipu6')
+source=('ov01a10.yaml')
+sha256sums=('SKIP')
+
+package() {
+    install -Dm644 "$srcdir/ov01a10.yaml" \
+        "$pkgdir/usr/share/libcamera/ipa/simple/ov01a10.yaml"
+}

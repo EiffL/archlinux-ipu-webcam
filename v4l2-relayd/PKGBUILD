@@ -1,0 +1,76 @@
+# PKGBUILD originally from https://github.com/stefanpartheym/archlinux-ipu6-webcam
+# Adapted for the mainline-kernel + libcamera approach:
+#   - input source switched from the proprietary `icamerasrc` to `libcamerasrc`
+#   - output format defaults to YUY2 for the widest application compatibility
+#   - ships a WirePlumber drop-in so PipeWire releases the sensor to the relay
+#
+# Builds v4l2-relayd, the on-demand GStreamer -> v4l2loopback relay daemon.
+# See https://code.launchpad.net/v4l2-relayd
+_pkgname=v4l2-relayd
+_host=git.launchpad.net
+pkgname=${_pkgname}
+pkgver=r42.6fd6b6a
+pkgrel=1
+pkgdesc="V4L2 relay daemon configured for libcamera (Intel IPU6/IPU7 MIPI cameras)"
+arch=('x86_64')
+url="https://${_host}/${_pkgname}"
+license=('GPL')
+depends=('libcamera' 'gst-plugin-libcamera' 'gst-plugins-base' 'gst-plugins-good'
+         'gstreamer' 'glib2')
+makedepends=('git' 'autoconf' 'automake' 'libtool' 'pkgconf')
+optdepends=('v4l2loopback-dkms: provides the /dev/video loopback device the relay writes to'
+            'libcamera-ipa: software ISP tuning data'
+            'libcamera-ipu6: color tuning/sensor helper for ov01a10 and friends (AUR)'
+            'wireplumber: PipeWire session manager (drop-in disables its libcamera monitor)')
+provides=('v4l2-relayd')
+conflicts=('v4l2-relayd')
+source=("git://${_host}/${_pkgname}#tag=upstream/0.1.3"
+        "0001-Fix-V4L2_EVENT_PRI_CLIENT_USAGE-to-use-value-used-up.patch"
+        "50-disable-libcamera-monitor.conf")
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+pkgver() {
+    cd "$_pkgname"
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "$_pkgname"
+    patch -Np1 -i ../0001-Fix-V4L2_EVENT_PRI_CLIENT_USAGE-to-use-value-used-up.patch
+    ./autogen.sh --prefix=/usr
+    make
+}
+
+package() {
+    cd "$_pkgname"
+    make DESTDIR="$pkgdir/" install
+    mv "$pkgdir/usr/etc" "$pkgdir/etc"
+
+    # --- Configure the relay for libcamera -----------------------------------
+    # libcamerasrc cannot negotiate the appsink's fixed caps directly the way
+    # icamerasrc can, so insert convert/scale/rate so the software ISP output
+    # is adapted to the requested FORMAT/WIDTH/HEIGHT/FRAMERATE.
+    sed -i 's|VIDEOSRC="videotestsrc"|VIDEOSRC="libcamerasrc ! videoconvert ! videoscale ! videorate"|g' \
+        "$pkgdir/etc/default/v4l2-relayd"
+    # YUY2 is accepted by the widest set of apps (Zoom, Teams, Discord, browsers).
+    sed -i 's/FORMAT=NV12/FORMAT=YUY2/g' "$pkgdir/etc/default/v4l2-relayd"
+    # Friendlier name in the camera picker; must match the v4l2loopback label.
+    sed -i 's/Virtual Camera/Intel IPU Camera/g' \
+        "$pkgdir/etc/default/v4l2-relayd" \
+        "$pkgdir/etc/modprobe.d/v4l2-relayd.conf"
+
+    # --- Service hardening tweaks (same as the legacy repo) ------------------
+    # Drop DeviceAllow/CapabilityBoundingSet so the relay does not crash under
+    # Wayland sessions.
+    sed -i 's/DeviceAllow=char-video4linux//g' \
+        "$pkgdir/usr/lib/systemd/system/v4l2-relayd.service"
+    sed -i 's/CapabilityBoundingSet=//g' \
+        "$pkgdir/usr/lib/systemd/system/v4l2-relayd.service"
+
+    # --- WirePlumber drop-in -------------------------------------------------
+    # Disable WirePlumber's libcamera monitor so it does not hold the sensor;
+    # the relay needs exclusive libcamera access, and everything else consumes
+    # the loopback device instead.
+    install -Dm644 "$srcdir/50-disable-libcamera-monitor.conf" \
+        "$pkgdir/usr/share/wireplumber/wireplumber.conf.d/50-disable-libcamera-monitor.conf"
+}
