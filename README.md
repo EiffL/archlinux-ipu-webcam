@@ -85,9 +85,12 @@ OV01A10 -> in-tree IPU6/IVSC drivers -> libcamera software ISP
 * `v4l2-relayd` listens for loopback consumer events. It starts physical capture
   only while an application uses the virtual camera and releases the sensor
   afterwards. The idle placeholder consists of black frames, not camera images.
-* The camera chooses its native capture size. GStreamer converts/letterboxes it
-  to **1280x720 YUY2 at 30 fps**, rather than asking the sensor for an unsupported
-  resolution. No images are recorded to disk by the service.
+* The camera chooses its native capture size. GStreamer crops/converts it to
+  **1280x720 YUY2 at 30 fps**, rather than asking the sensor for an unsupported
+  resolution. The default `FRAMING=crop` takes a centred 1280x720 region of the
+  1280x800 source without shrinking it. `FRAMING=fit` preserves the entire view
+  as a 1152x720 image with 64-pixel side bars. No images are recorded to disk
+  by the service.
 * A small relay patch makes capture/event-subscription failures exit with an
   error so systemd can retry, and releases pipelines on SIGTERM. This helps
   recover userspace after transient failures; it cannot repair a stuck kernel
@@ -123,8 +126,8 @@ then suspend/resume and a cold boot. Merely seeing a device or an active service
 is not proof of image capture. `ipu-webcam test` checks delivery, not colour
 quality; check the preview in an application too.
 
-Edit `/etc/archlinux-ipu-webcam.conf` for output dimensions, frame rate, device
-number, label, or colour tuning. Then restart the relay:
+Edit `/etc/archlinux-ipu-webcam.conf` for output dimensions, frame rate, framing,
+device number, label, or colour tuning. Then restart the relay:
 
 ```sh
 sudo systemctl restart archlinux-ipu-webcam.service
@@ -139,6 +142,32 @@ The service requires group access to camera devices (`video`), GPU rendering
 device whitelist does **not** grant access to `/dev/kvm`. Check local udev
 overrides if readiness reports a DMA-buffer permission error. No world-writable
 device permissions or user membership changes are installed.
+
+## Image quality
+
+Dell specifies this laptop's RGB webcam as
+[1280x720 at 30 fps](https://www.dell.com/support/manuals/en-us/xps-13-9315-laptop/xps-13-9315-setup-and-specs/camera?guid=guid-a061b3ea-eb94-48e8-a047-9a04883b6d86&lang=en-us).
+Increasing the virtual output to 1080p would not add sensor detail.
+
+`FRAMING=crop` uses the full 1280 columns at the default size, with no horizontal
+resampling or side bars, at the cost of 40 source rows at the top and bottom.
+It is the default starting with 1.0.0-4, including for older configuration files
+without a `FRAMING` entry. Set `FRAMING=fit` to retain the previous framing.
+
+The October 2026 local assessment found a stable 30 fps feed and visible noise
+under indoor lighting. The sensor was using its maximum analogue gain (about
+64x) and exposure (about 33 ms). Put a soft light in front of you, and keep
+bright lights out of the background where possible. This can reduce the need
+for high gain; raising resolution or sharpening cannot remove sensor noise.
+The software ISP currently exposes gamma, contrast, and, with this colour
+profile, saturation; the presence of other properties in `gst-inspect` does
+not mean the camera supports them. No heavy smoothing or artificial sharpening
+is enabled by this package.
+
+Enable **HD** in Zoom's video settings when available. The local 720p feed does
+not guarantee 720p transmission: Zoom also applies account, meeting, and
+bandwidth requirements. Check the sending resolution and frame rate in Zoom's
+meeting statistics. See [Zoom's HD requirements](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0066166).
 
 ## Upstream limitations and maintenance
 
@@ -205,11 +234,18 @@ and the raw-camera hiding rule matched driver properties only available after
 the device-disable check. Release 1.0.0-3 checks for the existing DMA device
 first and hides the IPU6 device by its udev bus path, with a node-level fallback.
 
-The earlier live capture test ran as the logged-in user on an existing loopback,
-not under the packaged dynamic user or on its new exclusive-caps device.
-The corrected service still needs an installed startup/capture test. Cold boot,
-application previews, image quality, and suspend/resume remain to be verified.
-Do not interpret a successful build as proof of those integration checks.
+After installing 1.0.0-3 and rebooting, both units started successfully, the
+relay ran under its packaged dynamic user with no automatic restarts, and
+PipeWire exposed only the named virtual camera. The user confirmed Zoom works.
+A 300-frame capture through `/dev/video60` measured 30.00 fps by timestamps,
+with no repeated frames in the 240-frame steady sample. Exposure was stable
+in that scene; this does not rule out the known AGC bug in other lighting.
+
+The 1.0.0-4 crop pipeline was additionally tested directly on the physical
+camera: it negotiated 1280x800 input, delivered 1280x720 without side bars,
+and sustained approximately 30 fps. Automated pixel checks verify both crop
+and fit modes. The installed relay still needs updating to apply that change.
+Suspend/resume and calibrated colour accuracy have not been verified.
 
 ## Development and removal
 

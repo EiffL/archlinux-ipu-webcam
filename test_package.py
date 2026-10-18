@@ -29,10 +29,11 @@ class PackageTests(unittest.TestCase):
     def test_defaults_and_valid_custom_configuration(self):
         self.assertEqual(self.config_result('').returncode, 0)
         self.assertEqual(self.config_result('WIDTH=640\nHEIGHT=480\nFRAMERATE=15\n').returncode, 0)
+        self.assertEqual(self.config_result('FRAMING=fit\n').returncode, 0)
 
     def test_invalid_configuration_rejected_before_starting_capture(self):
         for value in ['DEVICE=/dev/sda', 'WIDTH=1279', 'HEIGHT=0', 'FRAMERATE=999',
-                      'WIDTH=01280', 'WAIT_SECONDS=99', 'USE_TUNING=maybe',
+                      'WIDTH=01280', 'WAIT_SECONDS=99', 'USE_TUNING=maybe', 'FRAMING=stretch',
                       "CARD_LABEL='a camera name longer than thirty one characters'"]:
             with self.subTest(value=value):
                 self.assertNotEqual(self.config_result(value + '\n').returncode, 0)
@@ -65,6 +66,24 @@ class PackageTests(unittest.TestCase):
                         f'ensure_udmabuf {device}'], text=True, capture_output=True)
                     self.assertEqual(result.stdout, 'udmabuf')
                     self.assertEqual(result.returncode, status)
+
+    def test_actual_framing_preserves_resolution_and_requested_view(self):
+        for framing, active_width in [('crop', 1280), ('fit', 1152)]:
+            with self.subTest(framing=framing):
+                pipeline = subprocess.check_output(['bash', '-c',
+                    f'source {shlex.quote(str(HERE / "ipu-webcam"))}; '
+                    f'WIDTH=1280; HEIGHT=720; FRAMING={framing}; framing_pipeline'], text=True)
+                # Test real GStreamer negotiation and pixels with a 16:10
+                # synthetic image; neither path opens any hardware device.
+                command = ['gst-launch-1.0', '-q', 'videotestsrc', 'pattern=white',
+                           'num-buffers=1', '!', 'video/x-raw,format=RGB,width=1280,height=800,pixel-aspect-ratio=1/1', '!']
+                command += shlex.split(pipeline)
+                command += ['!', 'video/x-raw,format=RGB,width=1280,height=720,pixel-aspect-ratio=1/1', '!', 'fdsink', 'fd=1']
+                result = subprocess.run(command, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertEqual(len(result.stdout), 1280 * 720 * 3)
+                row = result.stdout[360 * 1280 * 3:361 * 1280 * 3]
+                self.assertEqual(sum(value > 200 for value in row[::3]), active_width)
 
     def cleanup_case(self, mode, fail_removal=False):
         tmp = tempfile.TemporaryDirectory()

@@ -1,7 +1,7 @@
 # Maintainer: Francois Lanusse
 pkgname=archlinux-ipu-webcam
 pkgver=1.0.0
-pkgrel=3
+pkgrel=4
 pkgdesc='On-demand OV01A10 webcam for the Dell XPS 9315 using upstream IPU6 and libcamera'
 arch=('x86_64')
 url='https://github.com/EiffL/archlinux-ipu-webcam'
@@ -40,16 +40,16 @@ source=(
 sha256sums=('247e0f68d361c5d59410acf74b09fe88ccbbfe7c8ae1797776a8e5e29c588159'
             '87e230b1712256ea3f1898b40576bdd3e2f3349d13060d3912d8185909edebc6'
             'ed4849708b3a44c0c4d5715a9daa23e2e69130147c4a60b7fff81b0d980fe13b'
-            '250a5af68b10bf0344e8d606e6994b42c7a5cf6992edd7e87dd32bf3348e6c5b'
-            '5e0607a7b0a3648479e7076a7f85a385f253973f63b3c00e264138a36caf7ef5'
+            '7caf2dbbbf7b00d82aa2b5e9a409330a761c8bcfeb2738def3b9bd5011cbbc2c'
+            '671eda941c785bcf6efa72812fbbf35f6b5c7775dc91db8768d98cdb162701d0'
             '6ec73af58a6a77c051bf7779112b13d6c59424d6fab37a3e8b991ee91a423852'
             'c5cb5c45b69937b0f969222c8fcfe73988029ee20cbde4b28a1bf86dd47e5e53'
             'a303dc13475757ca6202f5e2777de38d83c5ff5c9aeb2df4437552498b6e81ee'
             '12a9e510f52e4973804099d4b2f0c2fcb32085fa71e8f2581253633d46b46b55'
-            'ae042522cf9a36e4a00c51f5f49f8c4c7505fb6c9d43b820d44116f96547fb2b'
+            '768b045afb581362b0802266e8bb6a32d84ccc750f78326038c8a8b3903cde3e'
             '9aaf15aa817b77d4f67bcbcc134220c1f231621053d2b2ad42e04df7266b5ed7'
             'd8a7d81adb6f34fa8be3c0f4c5fda24358bf3052a7b52b5bcdd0147b7f427aa1'
-            '99ae34a7ba7427cb18669ea875fe4043cf660653170ff3274163af9adaffe9ca')
+            'f65f6e274769737a5005c16e47bedfa2864db44f10de0191970177ab5a95f5ab')
 
 prepare() {
   # makepkg symlinks individual sources; patch a copy, not the download cache.

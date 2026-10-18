@@ -7,7 +7,7 @@ die() { printf 'ipu-webcam: %s\n' "$*" >&2; exit 1; }
 load_config() {
   DEVICE=/dev/video60
   CARD_LABEL='Dell XPS 9315 Camera'
-  WIDTH=1280 HEIGHT=720 FRAMERATE=30 WAIT_SECONDS=45 USE_TUNING=yes
+  WIDTH=1280 HEIGHT=720 FRAMERATE=30 WAIT_SECONDS=45 USE_TUNING=yes FRAMING=crop
   local config=${IPU_WEBCAM_CONFIG:-/etc/archlinux-ipu-webcam.conf}
   if [[ -f $config ]]; then source "$config"; fi
   [[ $DEVICE =~ ^/dev/video[0-9]+$ ]] || die 'DEVICE must be /dev/video followed by a number'
@@ -21,6 +21,7 @@ load_config() {
   (( WIDTH % 2 == 0 )) || die 'YUY2 requires an even WIDTH'
   (( FRAMERATE <= 60 && WAIT_SECONDS <= 50 )) || die 'FRAMERATE must be <=60 and WAIT_SECONDS <=50'
   [[ $USE_TUNING == yes || $USE_TUNING == no ]] || die 'USE_TUNING must be yes or no'
+  [[ $FRAMING == crop || $FRAMING == fit ]] || die 'FRAMING must be crop or fit'
   export LC_ALL=C LIBCAMERA_PIPELINES_MATCH_LIST=simple
   if [[ $USE_TUNING == yes ]]; then
     export LIBCAMERA_IPA_CONFIG_PATH=${IPU_WEBCAM_DATA_DIR:-/usr/share/archlinux-ipu-webcam}/ipa
@@ -91,12 +92,20 @@ wait_camera() {
   die 'Camera readiness timed out; systemd will retry'
 }
 
+framing_pipeline() {
+  if [[ $FRAMING == crop ]]; then
+    printf 'aspectratiocrop aspect-ratio=%s/%s ! videoscale add-borders=false' "$WIDTH" "$HEIGHT"
+  else
+    printf 'videoscale add-borders=true'
+  fi
+}
+
 run_relay() {
   check_loopback
   local caps="video/x-raw,format=YUY2,width=$WIDTH,height=$HEIGHT,framerate=$FRAMERATE/1"
   caps+=',pixel-aspect-ratio=1/1,interlace-mode=progressive,colorimetry=bt709'
   exec "${IPU_WEBCAM_RELAY:-/usr/lib/archlinux-ipu-webcam/v4l2-relayd}" \
-    -i 'libcamerasrc ! queue max-size-buffers=2 leaky=downstream ! videoconvert ! videoscale add-borders=true ! videorate' \
+    -i "libcamerasrc ! queue max-size-buffers=2 leaky=downstream ! videoconvert ! $(framing_pipeline) ! videorate" \
     -s 'videotestsrc pattern=black num-buffers=2 ! videoconvert' \
     -o "appsrc name=appsrc caps=$caps ! queue max-size-buffers=2 leaky=downstream ! v4l2sink name=v4l2sink device=$DEVICE io-mode=mmap sync=false"
 }
