@@ -74,8 +74,9 @@ OV01A10 -> in-tree IPU6/IVSC drivers -> libcamera software ISP
          -> V4L2 applications / PipeWire / desktop camera portal
 ```
 
-* A root preparation unit loads `udmabuf` for the software ISP and
-  `v4l2loopback`, then creates one explicitly named
+* A root preparation unit uses the kernel's existing `/dev/udmabuf` for the
+  software ISP (loading its module only if absent) and loads `v4l2loopback`,
+  then creates one explicitly named
   device at `/dev/video60`, with `exclusive_caps=1`. It refuses to overwrite an
   existing unrelated device and never unloads the module.
 * The relay runs under a systemd dynamic user with restricted device access.
@@ -187,18 +188,27 @@ cleanly. No camera images were saved.
 
 The package builds and its automated checks cover invalid configuration,
 cleanup preview, backups, preservation of unrelated files/services, failed
-package removal, relay pipeline errors, and clean shutdown. Unit syntax was
+package removal, built-in versus modular DMA support, relay pipeline errors,
+and clean shutdown. When WirePlumber is present, its actual rule matcher also
+checks filtering before device creation, node filtering, and preservation of
+USB/loopback cameras without touching the running desktop. Unit syntax was
 checked with `systemd-analyze verify`.
 
-The local build used `makepkg --nodeps` because the runtime utility package
+The initial build used `makepkg --nodeps` because the runtime utility package
 `v4l2loopback-utils` was not installed; all build/check dependencies were
 already present. This avoided changing the host. Use the normal `makepkg -s`
 or `makepkg -si` commands above to resolve dependencies for installation.
 
-The package has **not been installed on this machine yet**. The live test ran
-as the logged-in user on the existing loopback, not under the packaged dynamic
-user or on its newly created exclusive-caps device. Cold boot, application
-previews, image quality, and suspend/resume still require an installation test.
+The first installed boot test of 1.0.0-2 exposed two integration errors:
+unconditionally loading `udmabuf` failed because this Arch kernel builds it in,
+and the raw-camera hiding rule matched driver properties only available after
+the device-disable check. Release 1.0.0-3 checks for the existing DMA device
+first and hides the IPU6 device by its udev bus path, with a node-level fallback.
+
+The earlier live capture test ran as the logged-in user on an existing loopback,
+not under the packaged dynamic user or on its new exclusive-caps device.
+The corrected service still needs an installed startup/capture test. Cold boot,
+application previews, image quality, and suspend/resume remain to be verified.
 Do not interpret a successful build as proof of those integration checks.
 
 ## Development and removal

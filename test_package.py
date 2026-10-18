@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Hardware-free checks for the destructive cleanup path and runtime validation."""
 import os
+import ctypes
+import ctypes.util
+import json
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -42,6 +46,26 @@ class PackageTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('not a loopback', result.stderr)
 
+    def test_builtin_udmabuf_does_not_require_a_loadable_module(self):
+        result = subprocess.run(['bash', '-c',
+            f'source {shlex.quote(str(HERE / "ipu-webcam"))}; '
+            'modprobe() { echo "unexpected modprobe" >&2; return 1; }; '
+            'ensure_udmabuf /dev/null'], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+
+    def test_absent_udmabuf_loads_module_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            device = shlex.quote(str(Path(tmp) / 'absent-udmabuf'))
+            for status in [0, 1]:
+                with self.subTest(module_exit_status=status):
+                    result = subprocess.run(['bash', '-c',
+                        f'source {shlex.quote(str(HERE / "ipu-webcam"))}; '
+                        f'modprobe() {{ printf "%s" "$*"; return {status}; }}; '
+                        f'ensure_udmabuf {device}'], text=True, capture_output=True)
+                    self.assertEqual(result.stdout, 'udmabuf')
+                    self.assertEqual(result.returncode, status)
+
     def cleanup_case(self, mode, fail_removal=False):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -79,13 +103,18 @@ sys.exit(2)
 import os, sys
 with open(os.environ['MOCK_CALLS'], 'a') as f: f.write('systemctl ' + ' '.join(sys.argv[1:]) + '\\n')
 if sys.argv[1] == 'list-unit-files':
-    if not os.path.exists(os.environ['MOCK_REMOVED']): print('v4l2-relayd@old.service enabled')
+    if not os.path.exists(os.environ['MOCK_REMOVED']):
+        print('v4l2-relayd@old.service enabled')
+        print('v4l2-relayd@.service enabled')
     print('pipewire.service enabled')
 if sys.argv[1] == 'list-units':
     print('v4l2-relayd@running.service loaded active running Old relay')
     print('pipewire.service loaded active running PipeWire')
 if sys.argv[1] == 'is-enabled':
-    sys.exit(0 if sys.argv[-1] == 'v4l2-relayd@old.service' else 1)
+    sys.exit(0 if sys.argv[-1] in ['v4l2-relayd@old.service', 'v4l2-relayd@.service'] else 1)
+if sys.argv[1] in ['is-active', 'stop'] and sys.argv[-1] == 'v4l2-relayd@.service':
+    print('Cannot query or stop a template as a running unit', file=sys.stderr)
+    sys.exit(1)
 ''')
         pacman.chmod(0o755)
         systemctl.chmod(0o755)
@@ -128,6 +157,15 @@ if sys.argv[1] == 'is-enabled':
         self.assertIn('disable v4l2-relayd@old.service', calls)
         self.assertIn('stop v4l2-relayd@running.service', calls)
 
+    def test_cleanup_does_not_query_or_stop_service_templates(self):
+        result, _, _, _, _, calls = self.cleanup_case('--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        self.assertNotIn('is-active --quiet v4l2-relayd@.service', calls)
+        self.assertNotIn('stop v4l2-relayd@.service', calls)
+        self.assertIn('disable v4l2-relayd@.service', calls)
+        self.assertIn('stop v4l2-relayd@running.service', calls)
+
     def test_failed_package_removal_preserves_configuration_and_services(self):
         result, root, unowned, owned, unrelated, calls = self.cleanup_case('--apply', fail_removal=True)
         self.assertNotEqual(result.returncode, 0)
@@ -136,6 +174,61 @@ if sys.argv[1] == 'is-enabled':
         self.assertNotIn('systemctl stop', calls)
         self.assertNotIn('systemctl disable', calls)
         self.assertNotIn('systemctl daemon-reload', calls)
+
+
+@unittest.skipUnless(shutil.which('spa-json-dump') and ctypes.util.find_library('wireplumber-0.5'),
+                     'WirePlumber rule checks require the optional WirePlumber installation')
+class WirePlumberTests(unittest.TestCase):
+    def setUp(self):
+        # Exercise WirePlumber's actual parser and rule matcher without opening
+        # a PipeWire connection, changing the session, or touching the camera.
+        self.wp = ctypes.CDLL(ctypes.util.find_library('wireplumber-0.5'))
+        signatures = {
+            'wp_spa_json_new_from_string': ([ctypes.c_char_p], ctypes.c_void_p),
+            'wp_spa_json_unref': ([ctypes.c_void_p], None),
+            'wp_properties_new_empty': ([], ctypes.c_void_p),
+            'wp_properties_set': ([ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p], ctypes.c_int),
+            'wp_properties_get': ([ctypes.c_void_p, ctypes.c_char_p], ctypes.c_char_p),
+            'wp_properties_unref': ([ctypes.c_void_p], None),
+            'wp_json_utils_match_rules_update_properties': ([ctypes.c_void_p, ctypes.c_void_p], ctypes.c_int),
+        }
+        for name, (arguments, result) in signatures.items():
+            function = getattr(self.wp, name)
+            function.argtypes = arguments
+            function.restype = result
+        config = json.loads(subprocess.check_output(
+            ['spa-json-dump', str(HERE / '90-archlinux-ipu-webcam.conf')], text=True))
+        self.rules = self.wp.wp_spa_json_new_from_string(json.dumps(config['monitor.v4l2.rules']).encode())
+        self.addCleanup(self.wp.wp_spa_json_unref, self.rules)
+
+    def apply_rules(self, properties):
+        props = self.wp.wp_properties_new_empty()
+        try:
+            for key, value in properties.items():
+                self.wp.wp_properties_set(props, key.encode(), value.encode())
+            self.wp.wp_json_utils_match_rules_update_properties(self.rules, props)
+            return {key: self.wp.wp_properties_get(props, key.encode())
+                    for key in ['device.disabled', 'node.disabled', 'priority.session']}
+        finally:
+            self.wp.wp_properties_unref(props)
+
+    def test_raw_device_hidden_before_driver_capabilities_exist(self):
+        result = self.apply_rules({'device.bus-path': 'pci-0000:00:05.0',
+                                   'device.name': 'v4l2_device.pci-0000_00_05.0'})
+        self.assertEqual(result['device.disabled'], b'true')
+
+    def test_raw_node_disabled_if_device_filter_is_bypassed(self):
+        self.assertEqual(self.apply_rules({'api.v4l2.cap.driver': 'isys'})['node.disabled'], b'true')
+
+    def test_loopback_and_usb_cameras_remain_available(self):
+        for properties in [
+            {'device.bus-path': 'platform:v4l2loopback-060', 'api.v4l2.cap.driver': 'v4l2 loopback'},
+            {'device.bus-path': 'pci-0000:00:14.0-usb-0:5:1.0', 'api.v4l2.cap.driver': 'uvcvideo'},
+        ]:
+            with self.subTest(properties=properties):
+                result = self.apply_rules(properties)
+                self.assertIsNone(result['device.disabled'])
+                self.assertIsNone(result['node.disabled'])
 
 
 @unittest.skipUnless(os.environ.get('IPU_WEBCAM_TEST_RELAY'), 'relay binary is tested by makepkg check()')

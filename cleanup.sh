@@ -101,7 +101,10 @@ main() {
   # If removal fails, no configuration is deleted. Never use -Rdd or -Rns.
   if ((${#installed[@]})); then pacman -R -- "${installed[@]}"; fi
   for unit in "${units[@]}"; do
-    if systemctl is-active --quiet "$unit"; then systemctl stop "$unit"; fi
+    # Templates can be enabled/disabled, but only concrete instances can run.
+    if [[ $unit != *@.service ]] && systemctl is-active --quiet "$unit"; then
+      systemctl stop "$unit"
+    fi
     if systemctl is-enabled --quiet "$unit"; then systemctl disable "$unit"; fi
   done
   for file in "${files[@]}"; do

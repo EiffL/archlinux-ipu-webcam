@@ -43,11 +43,18 @@ check_loopback() {
   [[ $(cat "$sys_path/name") == "$CARD_LABEL" ]] || die "$DEVICE belongs to another virtual camera; choose a free DEVICE and reboot"
 }
 
+ensure_udmabuf() {
+  # CONFIG_UDMABUF=y provides the device without a loadable module or a
+  # modules.builtin entry. Only try modprobe when the device is absent.
+  local device=${1:-/dev/udmabuf}
+  [[ -c $device ]] || modprobe udmabuf
+}
+
 prepare_device() {
   (( EUID == 0 )) || die 'prepare must run as root (normally via systemd)'
   check_hardware
   # Do not unload modules or remove other applications' virtual cameras.
-  modprobe udmabuf
+  ensure_udmabuf
   modprobe v4l2loopback devices=0
   if [[ ! -e $DEVICE ]]; then
     v4l2loopback-ctl add -n "$CARD_LABEL" -x 1 "$DEVICE"
