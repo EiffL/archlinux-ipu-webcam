@@ -1,0 +1,10 @@
+[Unit]
+Description=Create the Dell IPU webcam loopback device
+Before=archlinux-ipu-webcam.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ipu-webcam prepare
+RemainAfterExit=yes
+TimeoutStartSec=60
+

@@ -1,0 +1,196 @@
+--- a/v4l2-relayd.c
++++ b/v4l2-relayd.c
+@@ -16,6 +16,7 @@
+ #endif
+ 
+ #include <errno.h>
++#include <signal.h>
+ #include <unistd.h>
+ #include <sys/ioctl.h>
+ #include <linux/videodev2.h>
+@@ -51,6 +52,14 @@
+     "dataurisrc uri=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAEElEQVQoz2NgGAWjYBTAAAADEAABaJFtwwAAAABJRU5ErkJggg== ! pngdec ! imagefreeze num-buffers=2 ! videoscale ! videoconvert"; /* 16x16 black PNG */
+ 
+ static GMainLoop *loop = NULL;
++static gboolean had_error = FALSE;
++
++static gboolean
++stop_relay (gpointer data G_GNUC_UNUSED)
++{
++  g_main_loop_quit (loop);
++  return G_SOURCE_REMOVE;
++}
+ static guint input_bus_watch_id = 0;
+ static guint output_bus_watch_id = 0;
+ static guint splash_bus_watch_id = 0;
+@@ -139,7 +148,7 @@
+                            GstMessage *msg,
+                            gpointer    data)
+ {
+-  GstElement *pipeline = GST_ELEMENT (data);
++  (void) data;
+ 
+   switch (GST_MESSAGE_TYPE (msg)) {
+     case GST_MESSAGE_ERROR: {
+@@ -152,7 +161,9 @@
+       GST_ERROR ("%s", error->message);
+       g_error_free (error);
+ 
+-      gst_element_set_state (pipeline, GST_STATE_NULL);
++      /* Exit so systemd can re-probe after capture/resume failures. */
++      had_error = TRUE;
++      g_main_loop_quit (loop);
+       break;
+     }
+     default:
+@@ -197,7 +208,9 @@
+                                    GST_PARSE_FLAG_FATAL_ERRORS, &error);
+   if (element == NULL) {
+     GST_ERROR ("%s", error->message);
+-    g_error_free (error);
++    g_clear_error (&error);
++    had_error = TRUE;
++    g_main_loop_quit (loop);
+     return NULL;
+   }
+   if (!GST_IS_PIPELINE (element)) {
+@@ -211,6 +224,8 @@
+   src_pad = gst_bin_find_unlinked_pad (GST_BIN (pipeline), GST_PAD_SRC);
+   if (src_pad == NULL) {
+     GST_ERROR ("no src pad available in %s", name);
++    had_error = TRUE;
++    g_main_loop_quit (loop);
+     gst_object_unref (pipeline);
+     return NULL;
+   }
+@@ -276,8 +291,12 @@
+ static void
+ input_pipeline_enable ()
+ {
+-  gst_element_set_state (splash_pipeline_get (), GST_STATE_NULL);
+-  gst_element_set_state (input_pipeline_get (), GST_STATE_PLAYING);
++  GstElement *splash = splash_pipeline_get ();
++  GstElement *input = input_pipeline_get ();
++  if (splash == NULL || input == NULL)
++    return;
++  gst_element_set_state (splash, GST_STATE_NULL);
++  gst_element_set_state (input, GST_STATE_PLAYING);
+ }
+ 
+ static void
+@@ -285,7 +304,7 @@
+ {
+   if (input_pipeline != NULL)
+     gst_element_set_state (input_pipeline, GST_STATE_NULL);
+-  if (input_pipeline != NULL)
++  if (splash_pipeline != NULL)
+     gst_element_set_state (splash_pipeline, GST_STATE_PLAYING);
+ }
+ 
+@@ -359,8 +378,11 @@
+         break;
+       }
+ 
+-      if (old_state == GST_STATE_READY && new_state == GST_STATE_PAUSED)
+-        gst_element_set_state (splash_pipeline_get (), GST_STATE_PLAYING);
++      if (old_state == GST_STATE_READY && new_state == GST_STATE_PAUSED) {
++        GstElement *splash = splash_pipeline_get ();
++        if (splash != NULL)
++          gst_element_set_state (splash, GST_STATE_PLAYING);
++      }
+ 
+       if (new_state != GST_STATE_PLAYING)
+         break;
+@@ -378,8 +400,11 @@
+       if (ioctl (fd, VIDIOC_SUBSCRIBE_EVENT, &sub) == 0)
+         v4l2_event_poll_id =
+             g_unix_fd_add (fd, G_IO_PRI, v4l2sink_event_callback, NULL);
+-      else
++      else {
+         GST_ERROR ("V4L2_EVENT_PRI_CLIENT_USAGE not supported");
++        had_error = TRUE;
++        g_main_loop_quit (loop);
++      }
+ 
+       gst_object_unref (v4l2sink);
+       break;
+@@ -398,6 +423,7 @@
+       GST_ERROR ("%s", error->message);
+       g_error_free (error);
+ 
++      had_error = TRUE;
+       g_main_loop_quit (loop);
+       break;
+     }
+@@ -417,9 +443,13 @@
+   GstBus *bus;
+ 
+   pipeline = gst_parse_launch (opt_output, &error);
+-  if (pipeline == NULL) {
+-    GST_ERROR ("%s", error->message);
+-    g_error_free (error);
++  if (error != NULL || pipeline == NULL) {
++    if (pipeline != NULL)
++      gst_object_unref (pipeline);
++    GST_ERROR ("%s", error ? error->message : "Could not create output pipeline");
++    g_clear_error (&error);
++    had_error = TRUE;
++    g_main_loop_quit (loop);
+     return NULL;
+   }
+   gst_object_ref_sink (pipeline);
+@@ -433,7 +463,7 @@
+   appsrc = gst_bin_get_by_name (GST_BIN (pipeline), "appsrc");
+   g_object_set (appsrc,
+                 "stream-type", GST_APP_STREAM_TYPE_STREAM,
+-                "format", GST_FORMAT_DEFAULT,
++                "format", GST_FORMAT_TIME,
+                 "is-live", TRUE,
+                 "emit-signals", FALSE,
+                 NULL);
+@@ -457,26 +487,35 @@
+   GST_DEBUG_CATEGORY_INIT (GST_CAT_DEFAULT, "V4L2_RELAYD", 0, "v4l2-relayd");
+ 
+   loop = g_main_loop_new (NULL, FALSE);
++  g_unix_signal_add (SIGTERM, stop_relay, NULL);
++  g_unix_signal_add (SIGINT, stop_relay, NULL);
+   output_pipeline = output_pipeline_create ();
++  if (output_pipeline == NULL)
++    return 1;
+   gst_element_set_state (output_pipeline, GST_STATE_PLAYING);
+ 
+   GST_INFO ("Running...");
+   g_main_loop_run (loop);
+ 
+-  g_source_remove (input_bus_watch_id);
+-  g_source_remove (output_bus_watch_id);
+-  g_source_remove (splash_bus_watch_id);
++  if (input_bus_watch_id) g_source_remove (input_bus_watch_id);
++  if (output_bus_watch_id) g_source_remove (output_bus_watch_id);
++  if (splash_bus_watch_id) g_source_remove (splash_bus_watch_id);
++  if (v4l2_event_poll_id) g_source_remove (v4l2_event_poll_id);
+ 
+   gst_element_set_state (output_pipeline, GST_STATE_NULL);
+   gst_object_unref (GST_OBJECT (output_pipeline));
+ 
+-  gst_element_set_state (input_pipeline, GST_STATE_NULL);
+-  gst_object_unref (GST_OBJECT (input_pipeline));
+-
+-  gst_element_set_state (splash_pipeline, GST_STATE_NULL);
+-  gst_object_unref (GST_OBJECT (splash_pipeline));
++  if (input_pipeline != NULL) {
++    gst_element_set_state (input_pipeline, GST_STATE_NULL);
++    gst_object_unref (GST_OBJECT (input_pipeline));
++  }
++
++  if (splash_pipeline != NULL) {
++    gst_element_set_state (splash_pipeline, GST_STATE_NULL);
++    gst_object_unref (GST_OBJECT (splash_pipeline));
++  }
+ 
+   g_main_loop_unref (loop);
+ 
+-  return 0;
+-}
++  return had_error ? 1 : 0;
++}

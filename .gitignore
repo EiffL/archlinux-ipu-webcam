@@ -1,0 +1,8 @@
+/src/
+/pkg/
+/.build/
+/*.pkg.tar.*
+/v4l2-relayd.c
+/v4l2-relayd.LICENSE
+*.log
+__pycache__/

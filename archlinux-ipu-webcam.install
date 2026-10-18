@@ -1,0 +1,23 @@
+post_install() {
+  # Enabling writes only the normal wants symlink, including inside an arch-chroot.
+  # Do not start capture or restart the desktop from a pacman transaction.
+  systemctl enable archlinux-ipu-webcam.service
+  printf '%s\n' 'IPU webcam installed. Reboot, then select "Dell XPS 9315 Camera".' \
+    'Check readiness with: ipu-webcam status' \
+    'The camera turns on only when an application opens the virtual camera.'
+}
+
+post_upgrade() {
+  printf '%s\n' 'IPU webcam updated. Reboot to load the updated service and desktop configuration.'
+}
+
+pre_remove() {
+  systemctl disable archlinux-ipu-webcam.service
+  if [ -d /run/systemd/system ]; then
+    systemctl stop archlinux-ipu-webcam.service archlinux-ipu-webcam-prepare.service
+  fi
+}
+
+post_remove() {
+  printf '%s\n' 'IPU webcam removed. Reboot to remove its loopback and restore native camera discovery.'
+}

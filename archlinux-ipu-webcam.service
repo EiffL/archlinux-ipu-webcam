@@ -1,0 +1,42 @@
+[Unit]
+Description=On-demand Dell XPS 9315 webcam
+Requires=archlinux-ipu-webcam-prepare.service
+After=archlinux-ipu-webcam-prepare.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+DynamicUser=yes
+# Camera devices, DRM rendering, and the systemd default udmabuf group.
+# DevicePolicy below excludes unrelated device classes, including /dev/kvm.
+SupplementaryGroups=video render kvm
+ExecStartPre=/usr/bin/ipu-webcam wait
+ExecStart=/usr/bin/ipu-webcam relay
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=10
+RuntimeDirectory=archlinux-ipu-webcam
+Environment=XDG_CACHE_HOME=/run/archlinux-ipu-webcam
+Environment=GST_REGISTRY=/run/archlinux-ipu-webcam/gstreamer-registry.bin
+Environment=LIBCAMERA_PIPELINES_MATCH_LIST=simple
+Environment=GST_DEBUG=2
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=char-video4linux rw
+DeviceAllow=char-media rw
+DeviceAllow=char-drm rw
+DeviceAllow=/dev/udmabuf rw
+DeviceAllow=/dev/dma_heap/system rw
+
+[Install]
+WantedBy=multi-user.target
